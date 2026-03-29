@@ -1,0 +1,27 @@
+# Django
+db.sqlite3
+db.sqlite3-journal
+media/
+static/
+staticfiles/
+
+# Переменные окружения 
+.env
+.venv/
+env/
+venv/
+ENV/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# IDE (VS Code, PyCharm)
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
