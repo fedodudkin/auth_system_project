@@ -1,3 +1,5 @@
+from django.utils.decorators import method_decorator
+from django_ratelimit.decorators import ratelimit
 from rest_framework import status
 from rest_framework.request import Request
 from rest_framework.response import Response
@@ -13,6 +15,11 @@ from apps.users.serializers import (
 )
 
 
+@method_decorator(
+    # 3 регистрации с одного IP за 10 минут.
+    ratelimit(key="ip", rate="3/10m", method="POST", block=True),
+    name="dispatch",
+)
 class RegisterView(APIView):
     """POST /api/users/register/ — регистрация нового пользователя."""
 
@@ -41,6 +48,11 @@ class RegisterView(APIView):
         )
 
 
+@method_decorator(
+    # 5 попыток с одного IP за 1 минуту.
+    ratelimit(key="ip", rate="5/m", method="POST", block=True),
+    name="dispatch",
+)
 class LoginView(APIView):
     """POST /api/users/login/ — вход по email и паролю, возвращает JWT."""
 

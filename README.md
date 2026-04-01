@@ -11,6 +11,7 @@
 - [Архитектура RBAC](#архитектура-rbac)
 - [Структура проекта](#структура-проекта)
 - [Установка и запуск](#установка-и-запуск)
+- [Запуск через Docker](#запуск-через-docker)
 - [API Endpoints](#api-endpoints)
 - [Тестирование](#тестирование)
 
@@ -25,6 +26,9 @@
 - **Middleware** — автоматическое извлечение пользователя из заголовка `Authorization: Bearer <token>` и прикрепление к `request.my_user`
 - **Soft Delete** — деактивация пользователя (`is_active=False`) вместо физического удаления
 - **Admin API** — полный CRUD для управления правилами доступа через API
+- **Rate Limiting** — защита эндпоинтов входа и регистрации от брутфорса
+- **Swagger UI** — интерактивная документация API через drf-spectacular
+- **Docker** — полная контейнеризация приложения и базы данных
 
 Стандартные механизмы Django (`AbstractUser`, `django.contrib.auth`, сессии) намеренно не используются.
 
@@ -32,14 +36,17 @@
 
 ## Технологический стек
 
-| Компонент        | Технология              |
-|------------------|-------------------------|
-| Фреймворк        | Django 5.x              |
-| REST API         | Django REST Framework   |
-| База данных      | PostgreSQL              |
-| Аутентификация   | PyJWT 2.x               |
-| Хэширование      | bcrypt                  |
-| Переменные среды | python-dotenv           |
+| Компонент          | Технология              |
+|--------------------|-------------------------|
+| Фреймворк          | Django 5.x              |
+| REST API           | Django REST Framework   |
+| База данных        | PostgreSQL              |
+| Аутентификация     | PyJWT 2.x               |
+| Хэширование        | bcrypt                  |
+| Документация API   | drf-spectacular         |
+| Rate Limiting      | django-ratelimit        |
+| Контейнеризация    | Docker, docker-compose  |
+| Переменные среды   | python-dotenv           |
 
 ---
 
@@ -67,15 +74,15 @@ Products | Users | Orders | Roles | AccessRules
 
 **`AccessRoleRule`** — матрица прав: какая роль что может делать с каким ресурсом:
 
-| Поле         | Описание                                          |
-|--------------|---------------------------------------------------|
-| `read`       | Читать **свой** объект                            |
-| `read_all`   | Читать **все** объекты                            |
-| `create`     | Создавать объекты                                 |
-| `update`     | Редактировать **свой** объект                     |
-| `update_all` | Редактировать **любой** объект                    |
-| `delete`     | Удалять **свой** объект                           |
-| `delete_all` | Удалять **любой** объект                          |
+| Поле         | Описание                               |
+|--------------|----------------------------------------|
+| `read`       | Читать **свой** объект                 |
+| `read_all`   | Читать **все** объекты                 |
+| `create`     | Создавать объекты                      |
+| `update`     | Редактировать **свой** объект          |
+| `update_all` | Редактировать **любой** объект         |
+| `delete`     | Удалять **свой** объект                |
+| `delete_all` | Удалять **любой** объект               |
 
 ### Разница между `read` и `read_all`
 
@@ -103,6 +110,8 @@ auth_system_project/
 ├── core/                            # Настройки проекта
 │   ├── __init__.py
 │   ├── settings.py
+│   ├── settings_test.py             # Настройки для тестового окружения
+│   ├── exceptions.py                # Обработчик ошибок rate limiting (429)
 │   ├── urls.py
 │   └── wsgi.py
 │
@@ -138,6 +147,9 @@ auth_system_project/
 │       ├── urls.py
 │       └── tests.py
 │
+├── Dockerfile
+├── docker-compose.yml
+├── .dockerignore
 ├── .env                             # Переменные среды (не коммитить!)
 ├── .env.example                     # Шаблон переменных среды
 ├── .gitignore
@@ -149,14 +161,16 @@ auth_system_project/
 
 ## Установка и запуск
 
-### 1. Клонировать репозиторий
+### Локальный запуск (без Docker)
+
+#### 1. Клонировать репозиторий
 
 ```bash
 git clone <repository-url>
 cd auth_system_project
 ```
 
-### 2. Создать и активировать виртуальное окружение
+#### 2. Создать и активировать виртуальное окружение
 
 ```bash
 python -m venv venv
@@ -168,13 +182,13 @@ venv\Scripts\activate
 source venv/bin/activate
 ```
 
-### 3. Установить зависимости
+#### 3. Установить зависимости
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 4. Настроить переменные среды
+#### 4. Настроить переменные среды
 
 ```bash
 cp .env.example .env
@@ -184,14 +198,11 @@ cp .env.example .env
 
 ```env
 # Django
-# Сгенерировать: python -c "from django.core.management.utils import get_random_secret_key; print(get_random_secret_key())"
 SECRET_KEY=your-secret-django-key
-
-# Режим отладки — в продакшене обязательно False
 DEBUG=True
 ALLOWED_HOSTS=localhost,127.0.0.1
 
-# JWT — должен отличаться от SECRET_KEY
+# JWT
 JWT_SECRET=your-secret-jwt-key
 JWT_EXPIRATION_HOURS=24
 
@@ -199,36 +210,75 @@ JWT_EXPIRATION_HOURS=24
 DB_NAME=auth_db
 DB_USER=postgres
 DB_PASSWORD=your-db-password
-DB_HOST=localhost
+DB_HOST=localhost     # для локального запуска
 DB_PORT=5432
 ```
 
-### 5. Создать базу данных PostgreSQL
+#### 5. Создать базу данных PostgreSQL
 
 ```sql
 CREATE DATABASE auth_db;
 ```
 
-### 6. Применить миграции
+#### 6. Применить миграции
 
 ```bash
 python manage.py migrate
 ```
 
-### 7. ⚠️ Обязательно: инициализировать роли и права
+#### 7. ⚠️ Обязательно: инициализировать роли и права
 
 ```bash
 python manage.py seed_db
 ```
 
-Команда создаёт роли (`Admin`, `Manager`, `User`), бизнес-элементы (`Products`, `Users`, `Orders`, `Roles`, `AccessRules`) и матрицу прав доступа. **Без этого шага авторизация работать не будет.**
+Команда создаёт роли (`Admin`, `Manager`, `User`), бизнес-элементы и матрицу прав доступа. **Без этого шага авторизация работать не будет.**
 
 Команда идемпотентна — её можно запускать повторно без риска дублирования данных.
 
-### 8. Запустить сервер
+#### 8. Запустить сервер
 
 ```bash
 python manage.py runserver
+```
+
+---
+
+## Запуск через Docker
+
+#### 1. Настроить переменные среды
+
+```bash
+cp .env.example .env
+```
+
+В `.env` указать `DB_HOST=db` (имя сервиса из docker-compose):
+
+```env
+DB_HOST=db     # ← для Docker, не localhost
+```
+
+#### 2. Собрать и запустить контейнеры
+
+```bash
+docker-compose up --build
+```
+
+При первом запуске автоматически выполнятся:
+- `python manage.py migrate`
+- `python manage.py seed_db`
+
+#### 3. Последующие запуски
+
+```bash
+# В фоне
+docker-compose up -d
+
+# Остановить
+docker-compose down
+
+# Остановить и удалить данные БД
+docker-compose down -v
 ```
 
 API доступно по адресу: `http://127.0.0.1:8000/`
@@ -245,18 +295,26 @@ API доступно по адресу: `http://127.0.0.1:8000/`
 Authorization: Bearer <jwt_token>
 ```
 
+### Swagger UI
+
+Интерактивная документация доступна после запуска сервера:
+
+```
+http://127.0.0.1:8000/api/schema/swagger-ui/
+```
+
 ---
 
 ### Пользователи `/api/users/`
 
-| Метод    | URL                      | Доступ              | Описание                        |
-|----------|--------------------------|---------------------|---------------------------------|
-| `POST`   | `/api/users/register/`   | Публичный           | Регистрация нового пользователя |
-| `POST`   | `/api/users/login/`      | Публичный           | Вход, возвращает JWT-токен      |
-| `POST`   | `/api/users/logout/`     | Аутентифицирован    | Выход из системы                |
-| `GET`    | `/api/users/profile/`    | Аутентифицирован    | Просмотр своего профиля         |
-| `PATCH`  | `/api/users/profile/`    | Аутентифицирован    | Обновление профиля              |
-| `DELETE` | `/api/users/me/`         | Аутентифицирован    | Мягкое удаление аккаунта        |
+| Метод    | URL                      | Доступ           | Rate Limit | Описание                        |
+|----------|--------------------------|------------------|------------|---------------------------------|
+| `POST`   | `/api/users/register/`   | Публичный        | 3 / 10 мин | Регистрация нового пользователя |
+| `POST`   | `/api/users/login/`      | Публичный        | 5 / мин    | Вход, возвращает JWT-токен      |
+| `POST`   | `/api/users/logout/`     | Аутентифицирован | —          | Выход из системы                |
+| `GET`    | `/api/users/profile/`    | Аутентифицирован | —          | Просмотр своего профиля         |
+| `PATCH`  | `/api/users/profile/`    | Аутентифицирован | —          | Обновление профиля              |
+| `DELETE` | `/api/users/me/`         | Аутентифицирован | —          | Мягкое удаление аккаунта        |
 
 **Пример: регистрация**
 ```json
@@ -327,31 +385,28 @@ Authorization: Bearer <admin_token>
 | 401  | Не аутентифицирован (токен отсутствует или истёк)     |
 | 403  | Доступ запрещён (недостаточно прав)                   |
 | 404  | Ресурс не найден                                      |
+| 429  | Слишком много запросов (rate limit превышен)          |
 
 ---
 
 ## Тестирование
 
+Rate limiting отключается автоматически через отдельный файл настроек `core/settings_test.py`.
+
 ### Запустить все тесты
 
 ```bash
-python manage.py test apps
+python manage.py test --settings=core.settings_test -v 2
 ```
 
 ### Запустить тесты по модулям
 
 ```bash
 # Тесты аутентификации
-python manage.py test apps.users.tests
+python manage.py test apps.users.tests --settings=core.settings_test
 
 # Тесты RBAC
-python manage.py test apps.business.tests
-```
-
-### Запустить с подробным выводом
-
-```bash
-python manage.py test apps -v 2
+python manage.py test apps.business.tests --settings=core.settings_test
 ```
 
 ### Покрытие тестами

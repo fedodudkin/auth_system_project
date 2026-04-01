@@ -1,0 +1,40 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      # Данные БД сохраняются между перезапусками контейнера.
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  web:
+    build: .
+    restart: unless-stopped
+    # Ждём пока БД пройдёт healthcheck — иначе Django упадёт при старте.
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    volumes:
+      # Монтируем код для hot-reload в разработке.
+      - .:/app
+    command: >
+      sh -c "python manage.py migrate &&
+             python manage.py seed_db &&
+             python manage.py runserver 0.0.0.0:8000"
+
+volumes:
+  postgres_data:
